@@ -1,22 +1,65 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Smart Hostel Cleaning System</title>
+    <meta name="description" content="Optimize hostel cleaning schedules and resource management with real-time tracking, prioritization, and student request features for efficient operations." />
+    <meta name="robots" content="noindex, nofollow" />
 
-  <!DOCTYPE html>
-  <html lang="en">
-    <head>
-      
-      <meta charset="UTF-8" />
-      <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-      <title>Smart Hostel Cleaning System</title>
-      <meta name="description" content="Optimize hostel cleaning schedules and resource management with real-time tracking, prioritization, and student request features for efficient operations." />
-      <meta name="robots" content="noindex, nofollow" />
-      <style>html, body { height: 100%; margin: 0; } #root { height: 100%; }</style>
-      
-    </head>
+    <!-- Theme / browser chrome -->
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="format-detection" content="telephone=no" />
 
-    <body>
-      
-      <div id="root"></div>
-      <script type="module" src="/src/main.tsx"></script>
-      
-    </body>
-  </html>
-  
+    <!-- Inline SVG favicon (no extra request, replace with your own file if you have one) -->
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%A7%B9%3C/text%3E%3C/svg%3E" />
+
+    <!-- Social previews (still hidden from search engines by robots above) -->
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Smart Hostel Cleaning System" />
+    <meta property="og:description" content="Optimize hostel cleaning schedules and resource management with real-time tracking, prioritization, and student request features." />
+    <meta name="twitter:card" content="summary" />
+
+    <style>
+      html, body { height: 100%; margin: 0; }
+      #root { height: 100%; }
+      :root { color-scheme: dark light; }
+      body { background: #fff; color: #111; }
+      @media (prefers-color-scheme: dark) { body { background: #000; color: #eee; } }
+
+      /* Shown until React mounts and replaces #root's contents. */
+      .boot { display: grid; place-items: center; height: 100%; font: 14px system-ui, sans-serif; opacity: .7; }
+      .boot-spinner {
+        width: 28px; height: 28px; margin: 0 auto 12px; border-radius: 50%;
+        border: 3px solid currentColor; border-right-color: transparent;
+        animation: boot-spin .8s linear infinite;
+      }
+      @keyframes boot-spin { to { transform: rotate(360deg); } }
+      @media (prefers-reduced-motion: reduce) { .boot-spinner { animation-duration: 3s; } }
+    </style>
+
+    <!-- Apply the saved theme before first paint to avoid a light/dark flash.
+         Assumes next-themes' default storage key ("theme"). -->
+    <script>
+      try {
+        var t = localStorage.getItem('theme');
+        var dark = t ? t === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+        document.documentElement.classList.toggle('dark', dark);
+      } catch (e) {}
+    </script>
+  </head>
+
+  <body>
+    <noscript>This app needs JavaScript enabled to run.</noscript>
+
+    <div id="root">
+      <div class="boot" role="status" aria-live="polite">
+        <div><div class="boot-spinner"></div>Loading…</div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

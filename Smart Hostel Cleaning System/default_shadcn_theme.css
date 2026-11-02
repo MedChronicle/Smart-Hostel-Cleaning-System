@@ -1,6 +1,5 @@
-/* KEEP_IN_SYNC(fullscreen/resources/figmake/shadcn/globals.css) */
+/* Advanced globals.css — Tailwind v4 + shadcn tokens + hostel-system extensions */
 
-/* Class-based dark mode (works with next-themes). Harmless if already defined elsewhere. */
 @custom-variant dark (&:is(.dark *));
 
 :root {
@@ -43,7 +42,7 @@
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
 
-  /* ---- Additions: status colors (text on these should use the -foreground token) ---- */
+  /* Status */
   --success: oklch(0.527 0.154 150.069);
   --success-foreground: oklch(0.985 0 0);
   --warning: oklch(0.769 0.188 70.08);
@@ -51,17 +50,34 @@
   --info: oklch(0.546 0.245 262.881);
   --info-foreground: oklch(0.985 0 0);
 
-  /* ---- Additions: elevation ---- */
+  /* Cleanliness scale (maps to urgency levels in the DSA engine) */
+  --clean-excellent: oklch(0.6 0.16 155);
+  --clean-good: oklch(0.7 0.17 130);
+  --clean-fair: oklch(0.8 0.17 90);
+  --clean-poor: oklch(0.7 0.19 50);
+  --clean-critical: oklch(0.58 0.22 25);
+
+  /* Glass surface (theme-aware) */
+  --glass-bg: rgb(255 255 255 / 0.65);
+  --glass-border: rgb(0 0 0 / 0.08);
+  --scrollbar-thumb: rgb(0 0 0 / 0.25);
+
+  /* Elevation */
   --shadow-soft: 0 1px 2px rgb(0 0 0 / 0.06), 0 4px 12px rgb(0 0 0 / 0.06);
   --shadow-glow: 0 0 0 1px rgb(34 211 238 / 0.25), 0 8px 32px rgb(34 211 238 / 0.15);
+
+  /* Motion */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration-fast: 150ms;
+  --duration-base: 250ms;
 }
 
 .dark {
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
-  --card: oklch(0.145 0 0);
+  --card: oklch(0.185 0 0);
   --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.145 0 0);
+  --popover: oklch(0.185 0 0);
   --popover-foreground: oklch(0.985 0 0);
   --primary: oklch(0.985 0 0);
   --primary-foreground: oklch(0.205 0 0);
@@ -71,13 +87,14 @@
   --muted-foreground: oklch(0.708 0 0);
   --accent: oklch(0.269 0 0);
   --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.396 0.141 25.723);
-  --destructive-foreground: oklch(0.637 0.237 25.331);
+  /* fixed: brighter red with light text for contrast */
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.985 0 0);
   --border: oklch(0.269 0 0);
   --input: oklch(0.269 0 0);
-  --ring: oklch(0.439 0 0);
-  --font-weight-medium: 500;
-  --font-weight-normal: 400;
+  --input-background: oklch(0.22 0 0);
+  --switch-background: oklch(0.35 0 0);
+  --ring: oklch(0.55 0 0);
   --chart-1: oklch(0.488 0.243 264.376);
   --chart-2: oklch(0.696 0.17 162.48);
   --chart-3: oklch(0.769 0.188 70.08);
@@ -92,13 +109,23 @@
   --sidebar-border: oklch(0.269 0 0);
   --sidebar-ring: oklch(0.439 0 0);
 
-  /* ---- Additions ---- */
   --success: oklch(0.696 0.17 162.48);
   --success-foreground: oklch(0.145 0 0);
   --warning: oklch(0.828 0.189 84.429);
   --warning-foreground: oklch(0.145 0 0);
   --info: oklch(0.707 0.165 254.624);
   --info-foreground: oklch(0.145 0 0);
+
+  --clean-excellent: oklch(0.72 0.17 155);
+  --clean-good: oklch(0.78 0.17 130);
+  --clean-fair: oklch(0.85 0.17 90);
+  --clean-poor: oklch(0.75 0.18 55);
+  --clean-critical: oklch(0.68 0.22 25);
+
+  --glass-bg: rgb(255 255 255 / 0.05);
+  --glass-border: rgb(255 255 255 / 0.1);
+  --scrollbar-thumb: rgb(255 255 255 / 0.25);
+
   --shadow-soft: 0 1px 2px rgb(0 0 0 / 0.4), 0 4px 16px rgb(0 0 0 / 0.35);
   --shadow-glow: 0 0 0 1px rgb(34 211 238 / 0.35), 0 8px 40px rgb(34 211 238 / 0.2);
 }
@@ -143,43 +170,64 @@
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
 
-  /* ---- Additions: new utilities such as bg-success, text-warning, shadow-soft ---- */
   --color-success: var(--success);
   --color-success-foreground: var(--success-foreground);
   --color-warning: var(--warning);
   --color-warning-foreground: var(--warning-foreground);
   --color-info: var(--info);
   --color-info-foreground: var(--info-foreground);
+
+  /* bg-clean-critical, text-clean-good, ring-clean-fair ... */
+  --color-clean-excellent: var(--clean-excellent);
+  --color-clean-good: var(--clean-good);
+  --color-clean-fair: var(--clean-fair);
+  --color-clean-poor: var(--clean-poor);
+  --color-clean-critical: var(--clean-critical);
+
   --shadow-soft: var(--shadow-soft);
   --shadow-glow: var(--shadow-glow);
 }
 
-/* ---- Additions: animations (usage: animate-fade-up, animate-shimmer) ---- */
 @theme {
-  --animate-fade-up: fade-up 0.5s ease-out both;
+  --animate-fade-up: fade-up 0.5s var(--ease-out-expo) both;
+  --animate-fade-in: fade-in 0.3s ease-out both;
+  --animate-scale-in: scale-in 0.2s var(--ease-out-expo) both;
   --animate-shimmer: shimmer 2s linear infinite;
+  --animate-pulse-ring: pulse-ring 1.8s ease-out infinite;
 
   @keyframes fade-up {
     from { opacity: 0; transform: translateY(12px); }
     to   { opacity: 1; transform: translateY(0); }
   }
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+  @keyframes scale-in {
+    from { opacity: 0; transform: scale(0.96); }
+    to   { opacity: 1; transform: scale(1); }
+  }
   @keyframes shimmer {
     from { background-position: -200% 0; }
     to   { background-position: 200% 0; }
   }
+  /* for urgent rooms / student requests */
+  @keyframes pulse-ring {
+    0%   { box-shadow: 0 0 0 0 color-mix(in oklab, var(--clean-critical) 60%, transparent); }
+    100% { box-shadow: 0 0 0 14px transparent; }
+  }
 }
 
-/* ---- Additions: reusable utilities ---- */
+/* ---------- Utilities ---------- */
 
-/* The frosted-glass card pattern used across the dashboard components. */
+/* Theme-aware frosted glass (now visible in light mode too) */
 @utility glass {
-  backdrop-filter: blur(12px);
-  background-color: rgb(255 255 255 / 0.05);
-  border: 1px solid rgb(255 255 255 / 0.1);
+  backdrop-filter: blur(12px) saturate(140%);
+  background-color: var(--glass-bg);
+  border: 1px solid var(--glass-border);
   border-radius: var(--radius-xl);
 }
 
-/* Consistent keyboard focus ring. */
 @utility focus-ring {
   &:focus-visible {
     outline: 2px solid var(--ring);
@@ -187,39 +235,100 @@
   }
 }
 
-/* Slim scrollbars for tables and overlays. */
 @utility scrollbar-thin {
   scrollbar-width: thin;
-  scrollbar-color: rgb(255 255 255 / 0.25) transparent;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 
+/* Loading skeleton: <div class="skeleton h-4 w-32" /> */
+@utility skeleton {
+  background-image: linear-gradient(
+    90deg,
+    var(--muted) 25%,
+    color-mix(in oklab, var(--muted) 60%, var(--background)) 50%,
+    var(--muted) 75%
+  );
+  background-size: 200% 100%;
+  animation: var(--animate-shimmer);
+  border-radius: var(--radius-md);
+}
+
+/* Subtle lift on hover for room cards */
+@utility hover-lift {
+  transition: transform var(--duration-base) var(--ease-out-expo),
+              box-shadow var(--duration-base) var(--ease-out-expo);
+  &:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-soft);
+  }
+}
+
+/* Gradient text for headings */
+@utility text-gradient {
+  background-image: linear-gradient(135deg, var(--info), var(--chart-2));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Tabular numbers for scores, timers and tables */
+@utility tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Room cell colored by cleanliness: set --score (0-100) inline.
+   <div class="room-heat" style="--score: 42"> */
+@utility room-heat {
+  background-color: color-mix(
+    in oklab,
+    var(--clean-critical),
+    var(--clean-excellent) calc(var(--score, 50) * 1%)
+  );
+  color: oklch(0.15 0 0);
+}
+
+/* ---------- Base ---------- */
+
 @layer base {
-  :root {
-    color-scheme: light;
+  :root { color-scheme: light; }
+  .dark { color-scheme: dark; }
+
+  * { border-color: var(--border); }
+
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-size: var(--font-size);
   }
-  .dark {
-    color-scheme: dark;
-  }
+
   ::selection {
     background: color-mix(in oklab, var(--ring) 45%, transparent);
   }
+
   html {
     -webkit-text-size-adjust: 100%;
     text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
   }
+
+  button:not(:disabled), [role="button"]:not([aria-disabled="true"]) {
+    cursor: pointer;
+  }
+
   @media (prefers-reduced-motion: no-preference) {
-    html {
-      scroll-behavior: smooth;
-    }
+    html { scroll-behavior: smooth; }
   }
+
   @media (prefers-reduced-motion: reduce) {
-    *,
-    *::before,
-    *::after {
+    *, *::before, *::after {
       animation-duration: 0.01ms !important;
       animation-iteration-count: 1 !important;
       transition-duration: 0.01ms !important;
       scroll-behavior: auto !important;
     }
+  }
+
+  @media print {
+    .glass { backdrop-filter: none; background: #fff; border-color: #ccc; }
   }
 }

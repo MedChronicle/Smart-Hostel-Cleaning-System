@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useHostel } from '../context/HostelContext';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from './ui/card';
 import { Button } from './ui/button';
@@ -15,18 +15,24 @@ import {
   Download,
   Gauge,
   QrCode,
+  RefreshCw,
   RotateCcw,
   Scan,
   ShieldCheck,
+  Timer,
+  Trash2,
   Trophy,
   Users,
+  type LucideIcon,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import QRCode from 'qrcode';
 
+type StaffMember = ReturnType<typeof useHostel>['staff'][number];
 type CompletionSource = 'manual' | 'qr';
 type StaffSort = 'efficiency' | 'tasks' | 'name';
 type StaffFilter = 'all' | 'available' | 'busy';
+type ScanMode = 'idle' | 'simulated' | 'camera';
 
 interface CompletionLog {
   id: string;
@@ -39,6 +45,22 @@ interface CompletionLog {
   at: number;
 }
 
+interface QrPayload {
+  roomId: string;
+  timestamp: number;
+  type: 'cleaning_verification';
+}
+
+interface BarcodeResult {
+  rawValue: string;
+}
+
+interface BarcodeDetectorLike {
+  detect: (source: HTMLVideoElement) => Promise<BarcodeResult[]>;
+}
+
+type BarcodeDetectorCtor = new (options: { formats: string[] }) => BarcodeDetectorLike;
+
 const MIN_DURATION = 5;
 const MAX_DURATION = 120;
 const DEFAULT_DURATION = 20;
@@ -46,6 +68,7 @@ const DEFAULT_SCORE = 85;
 const SCAN_DELAY_MS = 1800;
 const QR_MAX_AGE_MS = 10 * 60 * 1000;
 const LOG_LIMIT = 6;
+const LOG_KEY = 'staffView:log:v1';
 const DURATION_PRESETS = [10, 15, 20, 30, 45, 60];
 
 const SORT_OPTIONS: { value: StaffSort; label: string }[] = [
@@ -69,11 +92,313 @@ const efficiencyTone = (value: number) => {
 const formatTime = (timestamp: number) =>
   new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-interface QrPayload {
-  roomId: string;
-  timestamp: number;
-  type: 'cleaning_verification';
+const formatCountdown = (seconds: number) => {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+};
+
+const getDetectorCtor = (): BarcodeDetectorCtor | undefined => {
+  if (typeof window === 'undefined') return undefined;
+  return (window as unknown as { BarcodeDetector?: BarcodeDetectorCtor }).BarcodeDetector;
+};
+
+const isLiveScanSupported = () =>
+  typeof navigator !== 'undefined' && !!getDetectorCtor() && !!navigator.mediaDevices?.getUserMedia;
+
+const loadLog = (): CompletionLog[] => {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.sessionStorage.getItem(LOG_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as CompletionLog[]).slice(0, LOG_LIMIT) : [];
+  } catch {
+    return [];
+  }
+};
+
+const saveLog = (entries: CompletionLog[]) => {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.setItem(LOG_KEY, JSON.stringify(entries));
+  } catch {
+    return;
+  }
+};
+
+type VerifyResult = { ok: true } | { ok: false; reason: string };
+
+const verifyPayload = (raw: string, expectedRoom: string): VerifyResult => {
+  try {
+    const parsed = JSON.parse(raw) as Partial<QrPayload>;
+    if (parsed.type !== 'cleaning_verification' || typeof parsed.roomId !== 'string') {
+      return { ok: false, reason: 'Unrecognized QR code' };
+    }
+    if (parsed.roomId !== expectedRoom) {
+      return { ok: false, reason: `QR code is for Room ${parsed.roomId}, not Room ${expectedRoom}` };
+    }
+    if (typeof parsed.timestamp !== 'number' || Date.now() - parsed.timestamp > QR_MAX_AGE_MS) {
+      return { ok: false, reason: 'QR code expired, refresh it and scan again' };
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false, reason: 'Unreadable QR code' };
+  }
+};
+
+function useRoomQr(roomId: string) {
+  const [state, setState] = useState<{ url: string; payload: string; issuedAt: number } | null>(null);
+  const [nonce, setNonce] = useState(0);
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    setState(null);
+    if (!roomId) return;
+    let cancelled = false;
+    const issuedAt = Date.now();
+    const payload: QrPayload = { roomId, timestamp: issuedAt, type: 'cleaning_verification' };
+    const serialized = JSON.stringify(payload);
+    QRCode.toDataURL(serialized, { width: 300, margin: 1 })
+      .then((url) => {
+        if (cancelled) return;
+        setState({ url, payload: serialized, issuedAt });
+        setNow(Date.now());
+      })
+      .catch(() => {
+        if (cancelled) return;
+        toast.error('Could not generate QR code');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [roomId, nonce]);
+
+  useEffect(() => {
+    if (!state) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [state]);
+
+  const secondsLeft = state
+    ? Math.max(0, Math.ceil((state.issuedAt + QR_MAX_AGE_MS - now) / 1000))
+    : 0;
+
+  return {
+    dataUrl: state?.url ?? '',
+    payload: state?.payload ?? '',
+    ready: !!state,
+    secondsLeft,
+    expired: !!state && secondsLeft === 0,
+    refresh: useCallback(() => setNonce((n) => n + 1), []),
+  };
 }
+
+function useCameraScanner() {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const frameRef = useRef<number>();
+  const [error, setError] = useState('');
+
+  const stop = useCallback(() => {
+    if (frameRef.current !== undefined) cancelAnimationFrame(frameRef.current);
+    frameRef.current = undefined;
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
+  }, []);
+
+  const start = useCallback(
+    async (onResult: (raw: string) => void): Promise<boolean> => {
+      const Detector = getDetectorCtor();
+      if (!Detector || !navigator.mediaDevices?.getUserMedia) {
+        setError('Camera scanning is not supported in this browser');
+        return false;
+      }
+      try {
+        setError('');
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment' },
+        });
+        streamRef.current = stream;
+        const video = videoRef.current;
+        if (!video) {
+          stop();
+          return false;
+        }
+        video.srcObject = stream;
+        await video.play();
+        const detector = new Detector({ formats: ['qr_code'] });
+        let last = 0;
+        const tick = async (time: number) => {
+          if (!streamRef.current) return;
+          if (time - last > 250) {
+            last = time;
+            try {
+              const codes = await detector.detect(video);
+              if (codes.length > 0 && streamRef.current) {
+                stop();
+                onResult(codes[0].rawValue);
+                return;
+              }
+            } catch {
+              last = time;
+            }
+          }
+          frameRef.current = requestAnimationFrame(tick);
+        };
+        frameRef.current = requestAnimationFrame(tick);
+        return true;
+      } catch (err) {
+        stop();
+        setError(
+          err instanceof DOMException && err.name === 'NotAllowedError'
+            ? 'Camera permission was denied'
+            : 'Could not start the camera'
+        );
+        return false;
+      }
+    },
+    [stop]
+  );
+
+  useEffect(() => stop, [stop]);
+
+  return { videoRef, error, start, stop };
+}
+
+const StatCard = memo(function StatCard({
+  icon: Icon,
+  iconClass,
+  value,
+  label,
+}: {
+  icon: LucideIcon;
+  iconClass: string;
+  value: React.ReactNode;
+  label: string;
+}) {
+  return (
+    <Card>
+      <CardContent className="flex items-center gap-3 p-4">
+        <Icon className={`h-5 w-5 ${iconClass}`} />
+        <div>
+          <div className="text-xl font-bold leading-none">{value}</div>
+          <div className="mt-1 text-xs text-muted-foreground">{label}</div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+});
+
+const ActiveTaskCard = memo(function ActiveTaskCard({
+  member,
+  room,
+  selected,
+  disabled,
+  onSelect,
+}: {
+  member: StaffMember;
+  room?: { id: string | number; cleanlinessScore: number; floor: string | number };
+  selected: boolean;
+  disabled: boolean;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(member.id)}
+      aria-pressed={selected}
+      disabled={disabled}
+      className={`rounded-lg border bg-orange-50 p-4 text-left transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-60 dark:bg-orange-950 ${
+        selected ? 'border-primary ring-2 ring-primary' : 'hover:border-primary/50'
+      }`}
+    >
+      <div className="mb-3 flex items-start justify-between">
+        <div>
+          <div className="font-semibold">{member.name}</div>
+          <div className="text-xs text-muted-foreground">{member.id}</div>
+        </div>
+        <Badge variant="secondary">In Progress</Badge>
+      </div>
+      {room && (
+        <div className="space-y-1 text-sm">
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">Room:</span>
+            <span className="font-semibold">{room.id}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">Current Score:</span>
+            <span>{room.cleanlinessScore}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">Floor:</span>
+            <span>{room.floor}</span>
+          </div>
+        </div>
+      )}
+    </button>
+  );
+});
+
+const StaffCard = memo(function StaffCard({
+  member,
+  isTop,
+}: {
+  member: StaffMember;
+  isTop: boolean;
+}) {
+  const pct = Math.min(100, Math.max(0, member.efficiency));
+  return (
+    <div
+      className={`rounded-lg border p-4 ${
+        member.status === 'busy'
+          ? 'bg-orange-50 dark:bg-orange-950'
+          : 'bg-green-50 dark:bg-green-950'
+      }`}
+    >
+      <div className="mb-2 flex items-start justify-between">
+        <div>
+          <div className="flex items-center gap-1.5 font-semibold">
+            {member.name}
+            {isTop && <Trophy className="h-3.5 w-3.5 text-yellow-600" aria-label="Top performer" />}
+          </div>
+          <div className="text-xs text-muted-foreground">{member.id}</div>
+        </div>
+        <Badge variant={member.status === 'available' ? 'default' : 'secondary'}>
+          {member.status}
+        </Badge>
+      </div>
+      <div className="space-y-2 text-sm">
+        <div className="flex justify-between">
+          <span className="text-muted-foreground">Tasks Completed:</span>
+          <span className="font-semibold">{member.tasksCompleted}</span>
+        </div>
+        <div className="space-y-1">
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">Efficiency:</span>
+            <span className="font-semibold">{member.efficiency}%</span>
+          </div>
+          <div
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={pct}
+            aria-label={`${member.name} efficiency`}
+            className="h-1.5 w-full overflow-hidden rounded-full bg-black/10 dark:bg-white/10"
+          >
+            <div
+              className={`h-full rounded-full transition-all motion-reduce:transition-none ${efficiencyTone(
+                member.efficiency
+              )}`}
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
 
 export function StaffView() {
   const { staff, rooms, completeTask } = useHostel();
@@ -82,16 +407,27 @@ export function StaffView() {
   const [newScore, setNewScore] = useState([DEFAULT_SCORE]);
   const [scoreTouched, setScoreTouched] = useState(false);
   const [duration, setDuration] = useState(String(DEFAULT_DURATION));
-  const [qrDataUrl, setQrDataUrl] = useState('');
-  const [qrPayload, setQrPayload] = useState('');
-  const [scanning, setScanning] = useState(false);
-  const [log, setLog] = useState<CompletionLog[]>([]);
+  const [scanMode, setScanMode] = useState<ScanMode>('idle');
+  const [log, setLog] = useState<CompletionLog[]>(loadLog);
   const [sortBy, setSortBy] = useState<StaffSort>('efficiency');
   const [filter, setFilter] = useState<StaffFilter>('all');
 
   const scanTimer = useRef<ReturnType<typeof setTimeout>>();
+  const selectedRoomRef = useRef('');
+  const finalizeRef = useRef<(source: CompletionSource) => boolean>(() => false);
+
+  const qr = useRoomQr(selectedRoom);
+  const { videoRef, error: cameraError, start: startCamera, stop: stopCamera } = useCameraScanner();
+  const liveScanSupported = useMemo(isLiveScanSupported, []);
+
+  const scanning = scanMode !== 'idle';
+  selectedRoomRef.current = selectedRoom;
 
   useEffect(() => () => clearTimeout(scanTimer.current), []);
+
+  useEffect(() => {
+    saveLog(log);
+  }, [log]);
 
   const busyStaff = useMemo(() => staff.filter((s) => s.status === 'busy'), [staff]);
 
@@ -100,15 +436,14 @@ export function StaffView() {
     [rooms, busyStaff]
   );
 
+  const roomById = useMemo(() => new Map(rooms.map((r) => [String(r.id), r])), [rooms]);
+
   const activeStaff = useMemo(
     () => busyStaff.find((s) => s.id === selectedStaff),
     [busyStaff, selectedStaff]
   );
 
-  const activeRoom = useMemo(
-    () => rooms.find((r) => r.id === selectedRoom),
-    [rooms, selectedRoom]
-  );
+  const activeRoom = useMemo(() => roomById.get(selectedRoom), [roomById, selectedRoom]);
 
   const durationNumber = Number(duration);
   const durationValid =
@@ -117,45 +452,20 @@ export function StaffView() {
     durationNumber <= MAX_DURATION;
 
   const scoreDelta = activeRoom ? newScore[0] - activeRoom.cleanlinessScore : 0;
-  const selectionConsistent = !!activeStaff && !!activeRoom && activeStaff.currentTask === activeRoom.id;
+  const selectionConsistent =
+    !!activeStaff && !!activeRoom && String(activeStaff.currentTask) === String(activeRoom.id);
   const canComplete = selectionConsistent && durationValid && !scanning;
+  const canScan = canComplete && qr.ready && !qr.expired;
 
   useEffect(() => {
     if (selectedStaff && !busyStaff.some((s) => s.id === selectedStaff)) {
+      clearTimeout(scanTimer.current);
+      stopCamera();
+      setScanMode('idle');
       setSelectedStaff('');
       setSelectedRoom('');
     }
-  }, [busyStaff, selectedStaff]);
-
-  useEffect(() => {
-    if (!selectedRoom) {
-      setQrDataUrl('');
-      setQrPayload('');
-      return;
-    }
-    let cancelled = false;
-    const payload: QrPayload = {
-      roomId: selectedRoom,
-      timestamp: Date.now(),
-      type: 'cleaning_verification',
-    };
-    const serialized = JSON.stringify(payload);
-    QRCode.toDataURL(serialized, { width: 300, margin: 1 })
-      .then((url) => {
-        if (cancelled) return;
-        setQrDataUrl(url);
-        setQrPayload(serialized);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setQrDataUrl('');
-        setQrPayload('');
-        toast.error('Could not generate QR code');
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedRoom]);
+  }, [busyStaff, selectedStaff, stopCamera]);
 
   const handleStaffChange = useCallback(
     (staffId: string) => {
@@ -175,21 +485,31 @@ export function StaffView() {
     [busyStaff]
   );
 
-  const resetForm = useCallback(() => {
+  const cancelScan = useCallback(() => {
     clearTimeout(scanTimer.current);
-    setScanning(false);
+    stopCamera();
+    setScanMode('idle');
+  }, [stopCamera]);
+
+  const resetForm = useCallback(() => {
+    cancelScan();
     setSelectedStaff('');
     setSelectedRoom('');
     setNewScore([DEFAULT_SCORE]);
     setScoreTouched(false);
     setDuration(String(DEFAULT_DURATION));
-    setQrDataUrl('');
-    setQrPayload('');
-  }, []);
+  }, [cancelScan]);
 
   const finalize = useCallback(
     (source: CompletionSource) => {
-      if (!activeStaff || !activeRoom || !durationValid) return false;
+      if (!activeStaff || !activeRoom || !selectionConsistent) {
+        toast.error('Selected staff member is no longer assigned to this room');
+        return false;
+      }
+      if (!durationValid) {
+        toast.error(`Duration must be between ${MIN_DURATION} and ${MAX_DURATION} minutes`);
+        return false;
+      }
 
       completeTask(activeRoom.id, activeStaff.id, newScore[0], durationNumber);
 
@@ -216,8 +536,30 @@ export function StaffView() {
       resetForm();
       return true;
     },
-    [activeStaff, activeRoom, durationValid, durationNumber, newScore, completeTask, resetForm]
+    [
+      activeStaff,
+      activeRoom,
+      selectionConsistent,
+      durationValid,
+      durationNumber,
+      newScore,
+      completeTask,
+      resetForm,
+    ]
   );
+
+  finalizeRef.current = finalize;
+
+  const handleScanResult = (raw: string) => {
+    setScanMode('idle');
+    const result = verifyPayload(raw, selectedRoomRef.current);
+    if (!result.ok) {
+      toast.error(result.reason);
+      return;
+    }
+    toast.success('QR Code scanned successfully!');
+    finalizeRef.current('qr');
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -225,58 +567,38 @@ export function StaffView() {
       toast.error('Please select both staff and room');
       return;
     }
-    if (!selectionConsistent) {
-      toast.error('Selected staff member is not assigned to this room');
-      return;
-    }
-    if (!durationValid) {
-      toast.error(`Duration must be between ${MIN_DURATION} and ${MAX_DURATION} minutes`);
-      return;
-    }
     finalize('manual');
   };
 
-  const handleQRScan = () => {
-    if (!canComplete || !qrPayload) {
-      toast.error('Select a staff member and a valid duration before scanning');
+  const startSimulatedScan = () => {
+    if (!canScan) {
+      toast.error('Select a staff member, a valid duration and a fresh QR code first');
       return;
     }
-    setScanning(true);
-    const expectedRoom = selectedRoom;
-    const payloadAtScan = qrPayload;
-    scanTimer.current = setTimeout(() => {
-      setScanning(false);
-      try {
-        const parsed = JSON.parse(payloadAtScan) as QrPayload;
-        const fresh = Date.now() - parsed.timestamp <= QR_MAX_AGE_MS;
-        if (parsed.type !== 'cleaning_verification' || parsed.roomId !== expectedRoom) {
-          toast.error('QR code does not match the selected room');
-          return;
-        }
-        if (!fresh) {
-          toast.error('QR code expired, reselect the room to refresh it');
-          return;
-        }
-        toast.success('QR Code scanned successfully!');
-        finalize('qr');
-      } catch {
-        toast.error('Unreadable QR code');
-      }
-    }, SCAN_DELAY_MS);
+    setScanMode('simulated');
+    const payloadAtScan = qr.payload;
+    scanTimer.current = setTimeout(() => handleScanResult(payloadAtScan), SCAN_DELAY_MS);
   };
 
-  const cancelScan = () => {
-    clearTimeout(scanTimer.current);
-    setScanning(false);
+  const startCameraScan = async () => {
+    if (!canScan) {
+      toast.error('Select a staff member, a valid duration and a fresh QR code first');
+      return;
+    }
+    setScanMode('camera');
+    const started = await startCamera(handleScanResult);
+    if (!started) setScanMode('idle');
   };
 
   const downloadQR = () => {
-    if (!qrDataUrl) return;
+    if (!qr.dataUrl) return;
     const anchor = document.createElement('a');
-    anchor.href = qrDataUrl;
+    anchor.href = qr.dataUrl;
     anchor.download = `room-${selectedRoom}-qr.png`;
     anchor.click();
   };
+
+  const clearLog = () => setLog([]);
 
   const stats = useMemo(() => {
     const total = staff.reduce((sum, s) => sum + s.tasksCompleted, 0);
@@ -300,106 +622,47 @@ export function StaffView() {
   }, [staff, filter, sortBy]);
 
   return (
-    <div className="max-w-5xl mx-auto space-y-6">
+    <div className="mx-auto max-w-5xl space-y-6">
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <Card>
-          <CardContent className="flex items-center gap-3 p-4">
-            <Users className="h-5 w-5 text-primary" />
-            <div>
-              <div className="text-xl font-bold leading-none">
-                {stats.available}/{staff.length}
-              </div>
-              <div className="text-xs text-muted-foreground mt-1">Available</div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="flex items-center gap-3 p-4">
-            <Clock className="h-5 w-5 text-orange-600" />
-            <div>
-              <div className="text-xl font-bold leading-none">{busyStaff.length}</div>
-              <div className="text-xs text-muted-foreground mt-1">Active tasks</div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="flex items-center gap-3 p-4">
-            <CheckCircle className="h-5 w-5 text-green-600" />
-            <div>
-              <div className="text-xl font-bold leading-none">{stats.total}</div>
-              <div className="text-xs text-muted-foreground mt-1">Tasks completed</div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="flex items-center gap-3 p-4">
-            <Gauge className="h-5 w-5 text-blue-600" />
-            <div>
-              <div className="text-xl font-bold leading-none">{stats.avg}%</div>
-              <div className="text-xs text-muted-foreground mt-1">Avg efficiency</div>
-            </div>
-          </CardContent>
-        </Card>
+        <StatCard
+          icon={Users}
+          iconClass="text-primary"
+          value={`${stats.available}/${staff.length}`}
+          label="Available"
+        />
+        <StatCard icon={Clock} iconClass="text-orange-600" value={busyStaff.length} label="Active tasks" />
+        <StatCard icon={CheckCircle} iconClass="text-green-600" value={stats.total} label="Tasks completed" />
+        <StatCard icon={Gauge} iconClass="text-blue-600" value={`${stats.avg}%`} label="Avg efficiency" />
       </div>
 
       <Card>
         <CardHeader>
           <CardTitle>Active Cleaning Tasks</CardTitle>
-          <CardDescription>Staff members currently assigned to rooms</CardDescription>
+          <CardDescription>Staff members currently assigned to rooms. Select one to complete it.</CardDescription>
         </CardHeader>
         <CardContent>
           {busyStaff.length === 0 ? (
-            <div className="text-center py-8 text-muted-foreground">
+            <div className="py-8 text-center text-muted-foreground">
               <p>No active tasks</p>
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {busyStaff.map((member) => {
-                const room = rooms.find((r) => r.id === member.currentTask);
-                const selected = member.id === selectedStaff;
-                return (
-                  <button
-                    key={member.id}
-                    type="button"
-                    onClick={() => handleStaffChange(member.id)}
-                    aria-pressed={selected}
-                    disabled={scanning}
-                    className={`p-4 border rounded-lg bg-orange-50 dark:bg-orange-950 text-left transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-60 ${
-                      selected ? 'ring-2 ring-primary border-primary' : 'hover:border-primary/50'
-                    }`}
-                  >
-                    <div className="flex items-start justify-between mb-3">
-                      <div>
-                        <div className="font-semibold">{member.name}</div>
-                        <div className="text-xs text-muted-foreground">{member.id}</div>
-                      </div>
-                      <Badge variant="secondary">In Progress</Badge>
-                    </div>
-                    {room && (
-                      <div className="space-y-1 text-sm">
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Room:</span>
-                          <span className="font-semibold">{room.id}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Current Score:</span>
-                          <span>{room.cleanlinessScore}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Floor:</span>
-                          <span>{room.floor}</span>
-                        </div>
-                      </div>
-                    )}
-                  </button>
-                );
-              })}
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              {busyStaff.map((member) => (
+                <ActiveTaskCard
+                  key={member.id}
+                  member={member}
+                  room={roomById.get(String(member.currentTask))}
+                  selected={member.id === selectedStaff}
+                  disabled={scanning}
+                  onSelect={handleStaffChange}
+                />
+              ))}
             </div>
           )}
         </CardContent>
       </Card>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <Card>
           <CardHeader>
             <CardTitle>Complete Cleaning Task</CardTitle>
@@ -431,7 +694,7 @@ export function StaffView() {
                   </SelectTrigger>
                   <SelectContent>
                     {busyRooms.map((room) => (
-                      <SelectItem key={room.id} value={room.id}>
+                      <SelectItem key={room.id} value={String(room.id)}>
                         Room {room.id} (Floor {room.floor})
                       </SelectItem>
                     ))}
@@ -555,64 +818,87 @@ export function StaffView() {
           <CardContent className="space-y-4">
             {selectedRoom ? (
               <>
-                <div className="bg-white p-4 rounded-lg border-2 border-dashed min-h-[150px] flex items-center justify-center">
-                  {qrDataUrl ? (
+                <div className="flex min-h-[150px] items-center justify-center rounded-lg border-2 border-dashed bg-white p-4">
+                  {qr.dataUrl ? (
                     <img
-                      src={qrDataUrl}
+                      src={qr.dataUrl}
                       alt={`QR Code for Room ${selectedRoom}`}
-                      className="w-full max-w-[250px] mx-auto"
+                      className={`mx-auto w-full max-w-[250px] ${qr.expired ? 'opacity-30' : ''}`}
                     />
                   ) : (
-                    <QrCode className="h-10 w-10 text-slate-300 animate-pulse" />
+                    <QrCode className="h-10 w-10 animate-pulse text-slate-300" />
                   )}
                 </div>
 
-                <div className="space-y-2">
-                  <p className="text-sm text-center text-muted-foreground">
-                    Room {selectedRoom} Verification Code
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground">Room {selectedRoom} Verification Code</span>
+                  {qr.ready && (
+                    <Badge variant={qr.expired ? 'destructive' : 'outline'} className="gap-1">
+                      <Timer className="h-3 w-3" />
+                      {qr.expired ? 'Expired' : formatCountdown(qr.secondsLeft)}
+                    </Badge>
+                  )}
+                </div>
+
+                <div className={scanMode === 'camera' ? 'relative overflow-hidden rounded-lg bg-black' : 'hidden'}>
+                  <video ref={videoRef} muted playsInline className="max-h-64 w-full object-cover" />
+                  <div className="pointer-events-none absolute inset-8 rounded-lg border-2 border-white/70" />
+                </div>
+
+                {cameraError && (
+                  <p role="alert" className="flex items-center gap-1 text-xs text-red-600">
+                    <AlertTriangle className="h-3 w-3" />
+                    {cameraError}
                   </p>
+                )}
+
+                {scanMode === 'simulated' && (
+                  <div
+                    role="status"
+                    className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-center dark:border-blue-800 dark:bg-blue-950"
+                  >
+                    <Camera className="mx-auto mb-2 h-8 w-8 text-blue-600 motion-safe:animate-pulse" />
+                    <p className="text-sm text-blue-900 dark:text-blue-100">Scanning QR code...</p>
+                  </div>
+                )}
+
+                {scanning ? (
+                  <Button type="button" variant="destructive" onClick={cancelScan} className="w-full">
+                    Cancel Scan
+                  </Button>
+                ) : (
                   <div className="grid grid-cols-2 gap-2">
-                    {scanning ? (
-                      <Button type="button" variant="destructive" onClick={cancelScan}>
-                        Cancel Scan
-                      </Button>
-                    ) : (
-                      <Button
-                        type="button"
-                        onClick={handleQRScan}
-                        variant="outline"
-                        disabled={!canComplete || !qrDataUrl}
-                      >
-                        <Scan className="mr-2 h-4 w-4" />
-                        Scan QR Code
+                    {liveScanSupported && (
+                      <Button type="button" onClick={startCameraScan} disabled={!canScan}>
+                        <Camera className="mr-2 h-4 w-4" />
+                        Scan with Camera
                       </Button>
                     )}
                     <Button
                       type="button"
                       variant="outline"
-                      onClick={downloadQR}
-                      disabled={!qrDataUrl || scanning}
+                      onClick={startSimulatedScan}
+                      disabled={!canScan}
+                      className={liveScanSupported ? '' : 'col-span-2'}
                     >
+                      <Scan className="mr-2 h-4 w-4" />
+                      Simulate Scan
+                    </Button>
+                    <Button type="button" variant="outline" onClick={downloadQR} disabled={!qr.dataUrl}>
                       <Download className="mr-2 h-4 w-4" />
                       Save QR
                     </Button>
-                  </div>
-                </div>
-
-                {scanning && (
-                  <div
-                    role="status"
-                    className="p-4 bg-blue-50 dark:bg-blue-950 rounded-lg border border-blue-200 dark:border-blue-800 text-center"
-                  >
-                    <Camera className="h-8 w-8 mx-auto mb-2 text-blue-600 motion-safe:animate-pulse" />
-                    <p className="text-sm text-blue-900 dark:text-blue-100">Scanning QR code...</p>
+                    <Button type="button" variant="outline" onClick={qr.refresh} disabled={!selectedRoom}>
+                      <RefreshCw className="mr-2 h-4 w-4" />
+                      Refresh Code
+                    </Button>
                   </div>
                 )}
 
-                <div className="text-xs text-muted-foreground space-y-1">
+                <div className="space-y-1 text-xs text-muted-foreground">
                   <p className="flex items-center gap-1">
                     <ShieldCheck className="h-3 w-3 text-green-600" />
-                    Verifies the code matches the selected room
+                    Verifies the code matches the room and is under 10 minutes old
                   </p>
                   <p>✓ Auto-updates cleanliness score</p>
                   <p>✓ Logs completion timestamp</p>
@@ -620,8 +906,8 @@ export function StaffView() {
                 </div>
               </>
             ) : (
-              <div className="text-center py-12 text-muted-foreground">
-                <QrCode className="h-12 w-12 mx-auto mb-2 opacity-50" />
+              <div className="py-12 text-center text-muted-foreground">
+                <QrCode className="mx-auto mb-2 h-12 w-12 opacity-50" />
                 <p>Select a room to generate QR code</p>
               </div>
             )}
@@ -632,15 +918,23 @@ export function StaffView() {
       {log.length > 0 && (
         <Card>
           <CardHeader>
-            <CardTitle>Recent Completions</CardTitle>
-            <CardDescription>Tasks you completed during this session</CardDescription>
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <CardTitle>Recent Completions</CardTitle>
+                <CardDescription>Tasks completed during this session</CardDescription>
+              </div>
+              <Button type="button" variant="ghost" size="sm" onClick={clearLog}>
+                <Trash2 className="mr-1 h-4 w-4" />
+                Clear
+              </Button>
+            </div>
           </CardHeader>
           <CardContent>
             <ul className="space-y-2">
               {log.map((entry) => (
                 <li
                   key={entry.id}
-                  className="flex items-center justify-between gap-3 rounded-lg border p-3 bg-green-50 dark:bg-green-950"
+                  className="flex items-center justify-between gap-3 rounded-lg border bg-green-50 p-3 dark:bg-green-950"
                 >
                   <div className="min-w-0">
                     <div className="text-sm font-semibold">
@@ -700,66 +994,18 @@ export function StaffView() {
         </CardHeader>
         <CardContent>
           {visibleStaff.length === 0 ? (
-            <div className="text-center py-8 text-muted-foreground">
+            <div className="py-8 text-center text-muted-foreground">
               <p>No staff match this filter</p>
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {visibleStaff.map((member) => {
-                const isTop = stats.top?.id === member.id && staff.length > 1;
-                return (
-                  <div
-                    key={member.id}
-                    className={`p-4 border rounded-lg ${
-                      member.status === 'busy'
-                        ? 'bg-orange-50 dark:bg-orange-950'
-                        : 'bg-green-50 dark:bg-green-950'
-                    }`}
-                  >
-                    <div className="flex items-start justify-between mb-2">
-                      <div>
-                        <div className="flex items-center gap-1.5 font-semibold">
-                          {member.name}
-                          {isTop && (
-                            <Trophy className="h-3.5 w-3.5 text-yellow-600" aria-label="Top performer" />
-                          )}
-                        </div>
-                        <div className="text-xs text-muted-foreground">{member.id}</div>
-                      </div>
-                      <Badge variant={member.status === 'available' ? 'default' : 'secondary'}>
-                        {member.status}
-                      </Badge>
-                    </div>
-                    <div className="space-y-2 text-sm">
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Tasks Completed:</span>
-                        <span className="font-semibold">{member.tasksCompleted}</span>
-                      </div>
-                      <div className="space-y-1">
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Efficiency:</span>
-                          <span className="font-semibold">{member.efficiency}%</span>
-                        </div>
-                        <div
-                          role="progressbar"
-                          aria-valuemin={0}
-                          aria-valuemax={100}
-                          aria-valuenow={member.efficiency}
-                          aria-label={`${member.name} efficiency`}
-                          className="h-1.5 w-full overflow-hidden rounded-full bg-black/10 dark:bg-white/10"
-                        >
-                          <div
-                            className={`h-full rounded-full transition-all motion-reduce:transition-none ${efficiencyTone(
-                              member.efficiency
-                            )}`}
-                            style={{ width: `${Math.min(100, Math.max(0, member.efficiency))}%` }}
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+              {visibleStaff.map((member) => (
+                <StaffCard
+                  key={member.id}
+                  member={member}
+                  isTop={stats.top?.id === member.id && staff.length > 1}
+                />
+              ))}
             </div>
           )}
         </CardContent>

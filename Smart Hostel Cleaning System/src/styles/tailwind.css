@@ -1,4 +1,8 @@
 @import 'tailwindcss' source(none);
-@source '../**/*.{js,ts,jsx,tsx}';
 
+/* Scan app code and the entry html for class names */
+@source '../**/*.{js,ts,jsx,tsx}';
+@source '../../index.html';
+
+/* shadcn-style enter/exit utilities (animate-in, fade-in, slide-in-from-*, ...) */
 @import 'tw-animate-css';

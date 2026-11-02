@@ -1,15 +1,28 @@
 /**
  * PostCSS Configuration
  *
- * Tailwind CSS v4 (via @tailwindcss/vite) automatically sets up all required
- * PostCSS plugins — you do NOT need to include `tailwindcss` or `autoprefixer` here.
+ * Tailwind CSS v4 (via @tailwindcss/vite) already handles: prefixing, nesting,
+ * @import inlining and minification. Do NOT add tailwindcss, autoprefixer,
+ * postcss-nested or cssnano here.
  *
- * This file only exists for adding additional PostCSS plugins, if needed.
- * For example:
- *
- * import postcssNested from 'postcss-nested'
- * export default { plugins: [postcssNested()] }
- *
- * Otherwise, you can leave this file empty.
+ * Install:  npm i -D postcss-preset-env
  */
-export default {}
+import postcssPresetEnv from 'postcss-preset-env'
+
+export default {
+  plugins: [
+    // Lowers modern CSS (color-mix, oklch fallbacks, :focus-visible, logical props)
+    // for older browsers, driven by your `browserslist` field in package.json.
+    postcssPresetEnv({
+      stage: 2,
+      // Tailwind v4 already uses cascade layers and nesting, and polyfilling them
+      // breaks utility ordering, so keep these OFF.
+      features: {
+        'cascade-layers': false,
+        'nesting-rules': false,
+        'custom-properties': false, // Tailwind's theme variables must stay as variables
+      },
+      autoprefixer: false, // handled by the Tailwind/Vite pipeline
+    }),
+  ],
+}

@@ -1,21 +1,46 @@
 import * as React from "react";
 
-const MOBILE_BREAKPOINT = 768;
+export const MOBILE_BREAKPOINT = 768;
 
-export function useIsMobile() {
-  const [isMobile, setIsMobile] = React.useState<boolean | undefined>(
-    undefined,
+/**
+ * Subscribes to a CSS media query and returns whether it currently matches.
+ * Built on useSyncExternalStore: no initial `undefined` state, no extra
+ * re-render after mount, and tear-free under concurrent rendering.
+ *
+ * @param query          A CSS media query, e.g. "(max-width: 767px)"
+ * @param serverFallback Value to use during SSR / hydration (default: false)
+ */
+export function useMediaQuery(query: string, serverFallback = false): boolean {
+  const subscribe = React.useCallback(
+    (onChange: () => void) => {
+      if (typeof window === "undefined" || !window.matchMedia) {
+        return () => {};
+      }
+      const mql = window.matchMedia(query);
+      mql.addEventListener("change", onChange);
+      return () => mql.removeEventListener("change", onChange);
+    },
+    [query],
   );
 
-  React.useEffect(() => {
-    const mql = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT - 1}px)`);
-    const onChange = () => {
-      setIsMobile(window.innerWidth < MOBILE_BREAKPOINT);
-    };
-    mql.addEventListener("change", onChange);
-    setIsMobile(window.innerWidth < MOBILE_BREAKPOINT);
-    return () => mql.removeEventListener("change", onChange);
-  }, []);
+  const getSnapshot = React.useCallback(() => {
+    if (typeof window === "undefined" || !window.matchMedia) {
+      return serverFallback;
+    }
+    return window.matchMedia(query).matches;
+  }, [query, serverFallback]);
 
-  return !!isMobile;
+  const getServerSnapshot = React.useCallback(
+    () => serverFallback,
+    [serverFallback],
+  );
+
+  return React.useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+}
+
+/**
+ * True when the viewport is narrower than `breakpoint` (default 768px).
+ */
+export function useIsMobile(breakpoint: number = MOBILE_BREAKPOINT): boolean {
+  return useMediaQuery(`(max-width: ${breakpoint - 1}px)`);
 }

@@ -5,23 +5,34 @@ import * as SliderPrimitive from "@radix-ui/react-slider";
 
 import { cn } from "./utils";
 
+type SliderProps = React.ComponentProps<typeof SliderPrimitive.Root> & {
+  trackClassName?: string;
+  rangeClassName?: string;
+  thumbClassName?: string;
+};
+
 function Slider({
   className,
+  trackClassName,
+  rangeClassName,
+  thumbClassName,
   defaultValue,
   value,
   min = 0,
   max = 100,
   ...props
-}: React.ComponentProps<typeof SliderPrimitive.Root>) {
-  const _values = React.useMemo(
-    () =>
-      Array.isArray(value)
-        ? value
-        : Array.isArray(defaultValue)
-          ? defaultValue
-          : [min, max],
-    [value, defaultValue, min, max],
-  );
+}: SliderProps) {
+  // Only the number of thumbs matters, so depend on the length, not the array identity.
+  const count = Array.isArray(value)
+    ? value.length
+    : Array.isArray(defaultValue)
+      ? defaultValue.length
+      : 1;
+
+  // Without a value, Radix renders a single thumb at min. The original fell back
+  // to [min, max] and rendered two thumbs that Radix had no values for.
+  const thumbLabels =
+    count === 2 ? ["Minimum", "Maximum"] : Array.from({ length: count }, () => undefined);
 
   return (
     <SliderPrimitive.Root
@@ -31,7 +42,9 @@ function Slider({
       min={min}
       max={max}
       className={cn(
-        "relative flex w-full touch-none items-center select-none data-[disabled]:opacity-50 data-[orientation=vertical]:h-full data-[orientation=vertical]:min-h-44 data-[orientation=vertical]:w-auto data-[orientation=vertical]:flex-col",
+        "relative flex w-full touch-none items-center select-none",
+        "data-[disabled]:cursor-not-allowed data-[disabled]:opacity-50",
+        "data-[orientation=vertical]:h-full data-[orientation=vertical]:min-h-44 data-[orientation=vertical]:w-auto data-[orientation=vertical]:flex-col",
         className,
       )}
       {...props}
@@ -39,21 +52,34 @@ function Slider({
       <SliderPrimitive.Track
         data-slot="slider-track"
         className={cn(
-          "bg-muted relative grow overflow-hidden rounded-full data-[orientation=horizontal]:h-4 data-[orientation=horizontal]:w-full data-[orientation=vertical]:h-full data-[orientation=vertical]:w-1.5",
+          // horizontal track is now h-1.5 to match the vertical w-1.5 (was h-4 vs w-1.5)
+          "relative grow overflow-hidden rounded-full bg-muted",
+          "data-[orientation=horizontal]:h-1.5 data-[orientation=horizontal]:w-full",
+          "data-[orientation=vertical]:h-full data-[orientation=vertical]:w-1.5",
+          trackClassName,
         )}
       >
         <SliderPrimitive.Range
           data-slot="slider-range"
           className={cn(
-            "bg-primary absolute data-[orientation=horizontal]:h-full data-[orientation=vertical]:w-full",
+            "absolute bg-primary data-[orientation=horizontal]:h-full data-[orientation=vertical]:w-full",
+            rangeClassName,
           )}
         />
       </SliderPrimitive.Track>
-      {Array.from({ length: _values.length }, (_, index) => (
+      {thumbLabels.map((label, index) => (
         <SliderPrimitive.Thumb
-          data-slot="slider-thumb"
           key={index}
-          className="border-primary bg-background ring-ring/50 block size-4 shrink-0 rounded-full border shadow-sm transition-[color,box-shadow] hover:ring-4 focus-visible:ring-4 focus-visible:outline-hidden disabled:pointer-events-none disabled:opacity-50"
+          data-slot="slider-thumb"
+          aria-label={label}
+          className={cn(
+            "block size-4 shrink-0 rounded-full border border-primary bg-background shadow-sm outline-hidden",
+            "ring-ring/50 transition-[color,box-shadow] motion-reduce:transition-none",
+            "hover:ring-4 focus-visible:ring-4",
+            "active:cursor-grabbing",
+            "data-[disabled]:pointer-events-none",
+            thumbClassName,
+          )}
         />
       ))}
     </SliderPrimitive.Root>
@@ -61,3 +87,4 @@ function Slider({
 }
 
 export { Slider };
+export type { SliderProps };

@@ -12,14 +12,54 @@ export type ChartConfig = {
   [k in string]: {
     label?: React.ReactNode;
     icon?: React.ComponentType;
+    /** Appended to values in the tooltip, e.g. "ms" or "%". */
+    unit?: string;
   } & (
     | { color?: string; theme?: never }
     | { color?: never; theme: Record<keyof typeof THEMES, string> }
   );
 };
 
+/* -------------------------------------------------------------------------- */
+/*  Helpers                                                                    */
+/* -------------------------------------------------------------------------- */
+
+/** Keys become CSS custom property names, so anything outside [a-zA-Z0-9_-] is replaced. */
+function safeKey(key: string): string {
+  return key.replace(/[^a-zA-Z0-9_-]/g, "-");
+}
+
+/**
+ * Config colors are written into a <style> tag. Reject anything that could end the
+ * declaration or the rule, so a color from user data can't inject CSS.
+ */
+function safeColor(color: string | undefined): string | null {
+  if (!color) return null;
+  return /[;{}<>\\@]|\/\*|url\(/i.test(color) ? null : color.trim();
+}
+
+/** `var(--color-desktop)`, using the same key sanitizing as the generated CSS. */
+function chartColor(key: string): string {
+  return `var(--color-${safeKey(key)})`;
+}
+
+function defaultFormat(value: unknown): string {
+  if (typeof value === "number") return value.toLocaleString();
+  if (Array.isArray(value)) return value.map(defaultFormat).join(" – ");
+  return String(value);
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Context                                                                    */
+/* -------------------------------------------------------------------------- */
+
 type ChartContextProps = {
   config: ChartConfig;
+  /** Series keys hidden through the interactive legend. */
+  hiddenKeys: ReadonlySet<string>;
+  /** Pass to a series' `hide` prop: `<Bar hide={isHidden("desktop")} />`. */
+  isHidden: (key: string) => boolean;
+  toggleSeries: (key: string) => void;
 };
 
 const ChartContext = React.createContext<ChartContextProps | null>(null);
@@ -34,40 +74,108 @@ function useChart() {
   return context;
 }
 
+/* -------------------------------------------------------------------------- */
+/*  Container                                                                  */
+/* -------------------------------------------------------------------------- */
+
+type ChartContainerProps = React.ComponentProps<"div"> & {
+  config: ChartConfig;
+  children: React.ComponentProps<
+    typeof RechartsPrimitive.ResponsiveContainer
+  >["children"];
+  /** Screen-reader summary of what the chart shows, linked with aria-describedby. */
+  description?: string;
+  /** Show a pulsing placeholder instead of the chart. */
+  loading?: boolean;
+  /** Show `emptyMessage` instead of an empty-looking chart. */
+  isEmpty?: boolean;
+  emptyMessage?: React.ReactNode;
+};
+
 function ChartContainer({
   id,
   className,
   children,
   config,
+  description,
+  loading = false,
+  isEmpty = false,
+  emptyMessage = "No data to show",
+  "aria-label": ariaLabel,
   ...props
-}: React.ComponentProps<"div"> & {
-  config: ChartConfig;
-  children: React.ComponentProps<
-    typeof RechartsPrimitive.ResponsiveContainer
-  >["children"];
-}) {
+}: ChartContainerProps) {
   const uniqueId = React.useId();
-  const chartId = `chart-${id || uniqueId.replace(/:/g, "")}`;
+  const chartId = `chart-${safeKey(id || uniqueId.replace(/:/g, ""))}`;
+  const descriptionId = `${chartId}-description`;
+
+  const [hiddenKeys, setHiddenKeys] = React.useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+
+  const toggleSeries = React.useCallback((key: string) => {
+    setHiddenKeys((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const contextValue = React.useMemo<ChartContextProps>(
+    () => ({
+      config,
+      hiddenKeys,
+      isHidden: (key) => hiddenKeys.has(key),
+      toggleSeries,
+    }),
+    [config, hiddenKeys, toggleSeries],
+  );
 
   return (
-    <ChartContext.Provider value={{ config }}>
+    <ChartContext.Provider value={contextValue}>
       <div
         data-slot="chart"
         data-chart={chartId}
+        role={ariaLabel ? "group" : undefined}
+        aria-label={ariaLabel}
+        aria-describedby={description ? descriptionId : undefined}
+        aria-busy={loading || undefined}
         className={cn(
           "[&_.recharts-cartesian-axis-tick_text]:fill-muted-foreground [&_.recharts-cartesian-grid_line[stroke='#ccc']]:stroke-border/50 [&_.recharts-curve.recharts-tooltip-cursor]:stroke-border [&_.recharts-polar-grid_[stroke='#ccc']]:stroke-border [&_.recharts-radial-bar-background-sector]:fill-muted [&_.recharts-rectangle.recharts-tooltip-cursor]:fill-muted [&_.recharts-reference-line_[stroke='#ccc']]:stroke-border flex aspect-video justify-center text-xs [&_.recharts-dot[stroke='#fff']]:stroke-transparent [&_.recharts-layer]:outline-hidden [&_.recharts-sector]:outline-hidden [&_.recharts-sector[stroke='#fff']]:stroke-transparent [&_.recharts-surface]:outline-hidden",
           className,
         )}
         {...props}
       >
+        {description ? (
+          <p id={descriptionId} className="sr-only">
+            {description}
+          </p>
+        ) : null}
         <ChartStyle id={chartId} config={config} />
-        <RechartsPrimitive.ResponsiveContainer>
-          {children}
-        </RechartsPrimitive.ResponsiveContainer>
+        {loading ? (
+          <div
+            role="status"
+            className="bg-muted/60 w-full animate-pulse self-stretch rounded-lg motion-reduce:animate-none"
+          >
+            <span className="sr-only">Loading chart</span>
+          </div>
+        ) : isEmpty ? (
+          <div className="text-muted-foreground flex size-full items-center justify-center text-sm">
+            {emptyMessage}
+          </div>
+        ) : (
+          <RechartsPrimitive.ResponsiveContainer>
+            {children}
+          </RechartsPrimitive.ResponsiveContainer>
+        )}
       </div>
     </ChartContext.Provider>
   );
 }
+
+/* -------------------------------------------------------------------------- */
+/*  Style (CSS variables per series, light and dark)                           */
+/* -------------------------------------------------------------------------- */
 
 const ChartStyle = ({ id, config }: { id: string; config: ChartConfig }) => {
   const colorConfig = Object.entries(config).filter(
@@ -82,25 +190,33 @@ const ChartStyle = ({ id, config }: { id: string; config: ChartConfig }) => {
     <style
       dangerouslySetInnerHTML={{
         __html: Object.entries(THEMES)
-          .map(
-            ([theme, prefix]) => `
-${prefix} [data-chart=${id}] {
-${colorConfig
-  .map(([key, itemConfig]) => {
-    const color =
-      itemConfig.theme?.[theme as keyof typeof itemConfig.theme] ||
-      itemConfig.color;
-    return color ? `  --color-${key}: ${color};` : null;
-  })
-  .join("\n")}
+          .map(([theme, prefix]) => {
+            const declarations = colorConfig
+              .map(([key, itemConfig]) => {
+                const color = safeColor(
+                  itemConfig.theme?.[theme as keyof typeof itemConfig.theme] ||
+                    itemConfig.color,
+                );
+                return color ? `  --color-${safeKey(key)}: ${color};` : null;
+              })
+              .filter(Boolean)
+              .join("\n");
+
+            return `
+${prefix} [data-chart="${safeKey(id)}"] {
+${declarations}
 }
-`,
-          )
+`;
+          })
           .join("\n"),
       }}
     />
   );
 };
+
+/* -------------------------------------------------------------------------- */
+/*  Tooltip                                                                    */
+/* -------------------------------------------------------------------------- */
 
 const ChartTooltip = RechartsPrimitive.Tooltip;
 
@@ -118,6 +234,9 @@ function ChartTooltipContent({
   color,
   nameKey,
   labelKey,
+  valueFormatter,
+  showTotal = false,
+  totalLabel = "Total",
 }: React.ComponentProps<typeof RechartsPrimitive.Tooltip> &
   React.ComponentProps<"div"> & {
     hideLabel?: boolean;
@@ -125,6 +244,11 @@ function ChartTooltipContent({
     indicator?: "line" | "dot" | "dashed";
     nameKey?: string;
     labelKey?: string;
+    /** Format every value, e.g. `(v) => "$" + v.toFixed(2)`. Simpler than replacing whole rows with `formatter`. */
+    valueFormatter?: (value: unknown, name: string) => React.ReactNode;
+    /** Add a summed total row when there is more than one series. */
+    showTotal?: boolean;
+    totalLabel?: React.ReactNode;
   }) {
   const { config } = useChart();
 
@@ -170,6 +294,11 @@ function ChartTooltipContent({
 
   const nestLabel = payload.length === 1 && indicator !== "dot";
 
+  const total = payload.reduce(
+    (sum, item) => (typeof item.value === "number" ? sum + item.value : sum),
+    0,
+  );
+
   return (
     <div
       className={cn(
@@ -182,11 +311,14 @@ function ChartTooltipContent({
         {payload.map((item, index) => {
           const key = `${nameKey || item.name || item.dataKey || "value"}`;
           const itemConfig = getPayloadConfigFromPayload(config, item, key);
-          const indicatorColor = color || item.payload.fill || item.color;
+          const indicatorColor = color || item.payload?.fill || item.color;
+          // Zero is a real value; only skip when there is nothing to show.
+          const hasValue =
+            item.value !== undefined && item.value !== null && item.value !== "";
 
           return (
             <div
-              key={item.dataKey}
+              key={`${item.dataKey ?? item.name ?? index}`}
               className={cn(
                 "[&>svg]:text-muted-foreground flex w-full flex-wrap items-stretch gap-2 [&>svg]:h-2.5 [&>svg]:w-2.5",
                 indicator === "dot" && "items-center",
@@ -222,7 +354,7 @@ function ChartTooltipContent({
                   )}
                   <div
                     className={cn(
-                      "flex flex-1 justify-between leading-none",
+                      "flex flex-1 justify-between gap-4 leading-none",
                       nestLabel ? "items-end" : "items-center",
                     )}
                   >
@@ -232,21 +364,42 @@ function ChartTooltipContent({
                         {itemConfig?.label || item.name}
                       </span>
                     </div>
-                    {item.value && (
+                    {hasValue ? (
                       <span className="text-foreground font-mono font-medium tabular-nums">
-                        {item.value.toLocaleString()}
+                        {valueFormatter
+                          ? valueFormatter(item.value, String(item.name ?? key))
+                          : defaultFormat(item.value)}
+                        {itemConfig?.unit ? (
+                          <span className="text-muted-foreground ml-0.5 font-normal">
+                            {itemConfig.unit}
+                          </span>
+                        ) : null}
                       </span>
-                    )}
+                    ) : null}
                   </div>
                 </>
               )}
             </div>
           );
         })}
+        {showTotal && payload.length > 1 ? (
+          <div className="border-border/50 mt-0.5 flex items-center justify-between gap-4 border-t pt-1.5 font-medium">
+            <span className="text-muted-foreground">{totalLabel}</span>
+            <span className="text-foreground font-mono tabular-nums">
+              {valueFormatter
+                ? valueFormatter(total, "total")
+                : defaultFormat(total)}
+            </span>
+          </div>
+        ) : null}
       </div>
     </div>
   );
 }
+
+/* -------------------------------------------------------------------------- */
+/*  Legend                                                                     */
+/* -------------------------------------------------------------------------- */
 
 const ChartLegend = RechartsPrimitive.Legend;
 
@@ -256,36 +409,43 @@ function ChartLegendContent({
   payload,
   verticalAlign = "bottom",
   nameKey,
+  interactive = false,
 }: React.ComponentProps<"div"> &
   Pick<RechartsPrimitive.LegendProps, "payload" | "verticalAlign"> & {
     hideIcon?: boolean;
     nameKey?: string;
+    /**
+     * Make each entry a toggle button. Wire the series up with
+     * `const { isHidden } = useChart()` and `<Bar hide={isHidden("desktop")} />`.
+     * Works for Bar, Line and Area series.
+     */
+    interactive?: boolean;
   }) {
-  const { config } = useChart();
+  const { config, isHidden, toggleSeries } = useChart();
 
-  if (!payload?.length) {
+  // Reference lines and similar report type "none"; they aren't legend entries.
+  const items = payload?.filter((item) => item.type !== "none");
+
+  if (!items?.length) {
     return null;
   }
 
   return (
     <div
       className={cn(
-        "flex items-center justify-center gap-4",
+        "flex flex-wrap items-center justify-center gap-4",
         verticalAlign === "top" ? "pb-3" : "pt-3",
         className,
       )}
     >
-      {payload.map((item) => {
+      {items.map((item, index) => {
         const key = `${nameKey || item.dataKey || "value"}`;
         const itemConfig = getPayloadConfigFromPayload(config, item, key);
+        const seriesKey = String(item.dataKey ?? item.value ?? key);
+        const hidden = interactive && isHidden(seriesKey);
 
-        return (
-          <div
-            key={item.value}
-            className={cn(
-              "[&>svg]:text-muted-foreground flex items-center gap-1.5 [&>svg]:h-3 [&>svg]:w-3",
-            )}
-          >
+        const content = (
+          <>
             {itemConfig?.icon && !hideIcon ? (
               <itemConfig.icon />
             ) : (
@@ -297,12 +457,39 @@ function ChartLegendContent({
               />
             )}
             {itemConfig?.label}
+          </>
+        );
+
+        const itemClass =
+          "[&>svg]:text-muted-foreground flex items-center gap-1.5 [&>svg]:h-3 [&>svg]:w-3";
+
+        return interactive ? (
+          <button
+            key={`${seriesKey}-${index}`}
+            type="button"
+            aria-pressed={!hidden}
+            onClick={() => toggleSeries(seriesKey)}
+            className={cn(
+              itemClass,
+              "focus-visible:ring-ring/50 rounded-sm outline-none transition-opacity focus-visible:ring-[3px] motion-reduce:transition-none",
+              hidden && "opacity-40 line-through",
+            )}
+          >
+            {content}
+          </button>
+        ) : (
+          <div key={`${seriesKey}-${index}`} className={itemClass}>
+            {content}
           </div>
         );
       })}
     </div>
   );
 }
+
+/* -------------------------------------------------------------------------- */
+/*  Payload helper                                                             */
+/* -------------------------------------------------------------------------- */
 
 // Helper to extract item config from a payload.
 function getPayloadConfigFromPayload(
@@ -350,4 +537,7 @@ export {
   ChartLegend,
   ChartLegendContent,
   ChartStyle,
+  useChart,
+  chartColor,
 };
+export type { ChartContainerProps };

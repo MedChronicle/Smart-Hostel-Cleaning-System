@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { Command as CommandPrimitive } from "cmdk";
-import { SearchIcon } from "lucide-react";
+import { Loader2Icon, SearchIcon, XIcon } from "lucide-react";
 
 import { cn } from "./utils";
 import {
@@ -12,6 +12,48 @@ import {
   DialogHeader,
   DialogTitle,
 } from "./dialog";
+
+/* -------------------------------------------------------------------------- */
+/*  Hook: global keyboard shortcut (Cmd/Ctrl + K by default)                  */
+/* -------------------------------------------------------------------------- */
+
+type UseCommandShortcutOptions = {
+  /** Key to listen for. Default: "k" */
+  key?: string;
+  /** Require Cmd (mac) / Ctrl (others). Default: true */
+  withMeta?: boolean;
+};
+
+/**
+ * Toggles open state when the shortcut is pressed.
+ *
+ * const [open, setOpen] = useCommandShortcut();
+ * <CommandDialog open={open} onOpenChange={setOpen}>...</CommandDialog>
+ */
+function useCommandShortcut(
+  options: UseCommandShortcutOptions = {},
+): [boolean, React.Dispatch<React.SetStateAction<boolean>>] {
+  const { key = "k", withMeta = true } = options;
+  const [open, setOpen] = React.useState(false);
+
+  React.useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const metaOk = withMeta ? e.metaKey || e.ctrlKey : true;
+      if (metaOk && e.key.toLowerCase() === key.toLowerCase()) {
+        e.preventDefault();
+        setOpen((prev) => !prev);
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [key, withMeta]);
+
+  return [open, setOpen];
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Command (root)                                                            */
+/* -------------------------------------------------------------------------- */
 
 function Command({
   className,
@@ -29,23 +71,43 @@ function Command({
   );
 }
 
+/* -------------------------------------------------------------------------- */
+/*  CommandDialog                                                             */
+/* -------------------------------------------------------------------------- */
+
+type CommandDialogProps = React.ComponentProps<typeof Dialog> & {
+  title?: string;
+  description?: string;
+  /** Props forwarded to the inner <Command> (e.g. shouldFilter, loop). */
+  commandProps?: React.ComponentProps<typeof CommandPrimitive>;
+  className?: string;
+};
+
 function CommandDialog({
   title = "Command Palette",
   description = "Search for a command to run...",
   children,
+  commandProps,
+  className,
   ...props
-}: React.ComponentProps<typeof Dialog> & {
-  title?: string;
-  description?: string;
-}) {
+}: CommandDialogProps) {
   return (
     <Dialog {...props}>
-      <DialogHeader className="sr-only">
-        <DialogTitle>{title}</DialogTitle>
-        <DialogDescription>{description}</DialogDescription>
-      </DialogHeader>
-      <DialogContent className="overflow-hidden p-0">
-        <Command className="[&_[cmdk-group-heading]]:text-muted-foreground **:data-[slot=command-input-wrapper]:h-12 [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group]]:px-2 [&_[cmdk-group]:not([hidden])_~[cmdk-group]]:pt-0 [&_[cmdk-input-wrapper]_svg]:h-5 [&_[cmdk-input-wrapper]_svg]:w-5 [&_[cmdk-input]]:h-12 [&_[cmdk-item]]:px-2 [&_[cmdk-item]]:py-3 [&_[cmdk-item]_svg]:h-5 [&_[cmdk-item]_svg]:w-5">
+      <DialogContent
+        className={cn("overflow-hidden p-0 sm:max-w-xl", className)}
+      >
+        {/* Header lives inside DialogContent so screen readers associate it */}
+        <DialogHeader className="sr-only">
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
+        </DialogHeader>
+        <Command
+          {...commandProps}
+          className={cn(
+            "[&_[cmdk-group-heading]]:text-muted-foreground **:data-[slot=command-input-wrapper]:h-12 [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group]]:px-2 [&_[cmdk-group]:not([hidden])_~[cmdk-group]]:pt-0 [&_[cmdk-input-wrapper]_svg]:h-5 [&_[cmdk-input-wrapper]_svg]:w-5 [&_[cmdk-input]]:h-12 [&_[cmdk-item]]:px-2 [&_[cmdk-item]]:py-3 [&_[cmdk-item]_svg]:h-5 [&_[cmdk-item]_svg]:w-5",
+            commandProps?.className,
+          )}
+        >
           {children}
         </Command>
       </DialogContent>
@@ -53,27 +115,74 @@ function CommandDialog({
   );
 }
 
+/* -------------------------------------------------------------------------- */
+/*  CommandInput: loading spinner + clear button                              */
+/* -------------------------------------------------------------------------- */
+
+type CommandInputProps = React.ComponentProps<typeof CommandPrimitive.Input> & {
+  /** Shows a spinner instead of the search icon (async search). */
+  loading?: boolean;
+  /** Show an "x" button when there is text. Default: true */
+  clearable?: boolean;
+};
+
 function CommandInput({
   className,
+  loading = false,
+  clearable = true,
+  value,
+  onValueChange,
   ...props
-}: React.ComponentProps<typeof CommandPrimitive.Input>) {
+}: CommandInputProps) {
+  // Track value internally so the clear button works in uncontrolled mode too.
+  const [internal, setInternal] = React.useState("");
+  const current = value ?? internal;
+
+  const handleChange = (next: string) => {
+    if (value === undefined) setInternal(next);
+    onValueChange?.(next);
+  };
+
   return (
     <div
       data-slot="command-input-wrapper"
       className="flex h-9 items-center gap-2 border-b px-3"
     >
-      <SearchIcon className="size-4 shrink-0 opacity-50" />
+      {loading ? (
+        <Loader2Icon
+          aria-label="Loading"
+          className="size-4 shrink-0 animate-spin opacity-50"
+        />
+      ) : (
+        <SearchIcon className="size-4 shrink-0 opacity-50" />
+      )}
       <CommandPrimitive.Input
         data-slot="command-input"
+        value={current}
+        onValueChange={handleChange}
         className={cn(
           "placeholder:text-muted-foreground flex h-10 w-full rounded-md bg-transparent py-3 text-sm outline-hidden disabled:cursor-not-allowed disabled:opacity-50",
           className,
         )}
         {...props}
       />
+      {clearable && current.length > 0 && (
+        <button
+          type="button"
+          aria-label="Clear search"
+          onClick={() => handleChange("")}
+          className="text-muted-foreground hover:text-foreground focus-visible:ring-ring shrink-0 rounded-sm p-0.5 outline-hidden transition-colors focus-visible:ring-2"
+        >
+          <XIcon className="size-4" />
+        </button>
+      )}
     </div>
   );
 }
+
+/* -------------------------------------------------------------------------- */
+/*  List / Empty / Loading / Group / Separator / Item / Shortcut              */
+/* -------------------------------------------------------------------------- */
 
 function CommandList({
   className,
@@ -83,7 +192,7 @@ function CommandList({
     <CommandPrimitive.List
       data-slot="command-list"
       className={cn(
-        "max-h-[300px] scroll-py-1 overflow-x-hidden overflow-y-auto",
+        "max-h-[300px] scroll-py-1 overflow-x-hidden overflow-y-auto overscroll-contain",
         className,
       )}
       {...props}
@@ -92,12 +201,29 @@ function CommandList({
 }
 
 function CommandEmpty({
+  className,
   ...props
 }: React.ComponentProps<typeof CommandPrimitive.Empty>) {
   return (
     <CommandPrimitive.Empty
       data-slot="command-empty"
-      className="py-6 text-center text-sm"
+      className={cn("text-muted-foreground py-6 text-center text-sm", className)}
+      {...props}
+    />
+  );
+}
+
+function CommandLoading({
+  className,
+  ...props
+}: React.ComponentProps<typeof CommandPrimitive.Loading>) {
+  return (
+    <CommandPrimitive.Loading
+      data-slot="command-loading"
+      className={cn(
+        "text-muted-foreground flex items-center justify-center gap-2 py-6 text-sm",
+        className,
+      )}
       {...props}
     />
   );
@@ -132,10 +258,12 @@ function CommandSeparator({
   );
 }
 
-function CommandItem({
-  className,
-  ...props
-}: React.ComponentProps<typeof CommandPrimitive.Item>) {
+type CommandItemProps = React.ComponentProps<typeof CommandPrimitive.Item> & {
+  /** Optional leading icon. */
+  icon?: React.ReactNode;
+};
+
+function CommandItem({ className, icon, children, ...props }: CommandItemProps) {
   return (
     <CommandPrimitive.Item
       data-slot="command-item"
@@ -144,7 +272,10 @@ function CommandItem({
         className,
       )}
       {...props}
-    />
+    >
+      {icon}
+      {children}
+    </CommandPrimitive.Item>
   );
 }
 
@@ -164,14 +295,70 @@ function CommandShortcut({
   );
 }
 
+/* -------------------------------------------------------------------------- */
+/*  Kbd + Footer: keyboard hints at the bottom of the palette                 */
+/* -------------------------------------------------------------------------- */
+
+function CommandKbd({ className, ...props }: React.ComponentProps<"kbd">) {
+  return (
+    <kbd
+      data-slot="command-kbd"
+      className={cn(
+        "bg-muted text-muted-foreground pointer-events-none inline-flex h-5 min-w-5 items-center justify-center rounded border px-1 font-mono text-[10px] font-medium select-none",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+
+function CommandFooter({
+  className,
+  children,
+  ...props
+}: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="command-footer"
+      className={cn(
+        "text-muted-foreground flex items-center gap-4 border-t px-3 py-2 text-xs",
+        className,
+      )}
+      {...props}
+    >
+      {children ?? (
+        <>
+          <span className="flex items-center gap-1">
+            <CommandKbd>↑</CommandKbd>
+            <CommandKbd>↓</CommandKbd>
+            navigate
+          </span>
+          <span className="flex items-center gap-1">
+            <CommandKbd>↵</CommandKbd>
+            select
+          </span>
+          <span className="flex items-center gap-1">
+            <CommandKbd>esc</CommandKbd>
+            close
+          </span>
+        </>
+      )}
+    </div>
+  );
+}
+
 export {
   Command,
   CommandDialog,
   CommandInput,
   CommandList,
   CommandEmpty,
+  CommandLoading,
   CommandGroup,
   CommandItem,
   CommandShortcut,
   CommandSeparator,
+  CommandKbd,
+  CommandFooter,
+  useCommandShortcut,
 };
